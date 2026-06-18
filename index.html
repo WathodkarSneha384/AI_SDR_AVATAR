@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Babu — AI SDR Avatar</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        min-height: 100dvh;
+        background: linear-gradient(135deg, #1E3A2B 0%, #2C5240 50%, #1a3350 100%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+      }
+      .hero {
+        text-align: center;
+        padding: 40px 24px;
+        max-width: 600px;
+      }
+      .hero h1 { font-size: clamp(2rem, 5vw, 3.5rem); font-weight: 800; margin-bottom: 16px; }
+      .hero p  { font-size: 1.15rem; line-height: 1.6; opacity: .8; margin-bottom: 32px; }
+      .hint {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: .95rem;
+        opacity: .55;
+        animation: bounce 2s ease-in-out infinite;
+      }
+      @keyframes bounce {
+        0%, 100% { transform: translateY(0); }
+        50%       { transform: translateY(5px); }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="hero">
+      <h1>Your Website Goes Here</h1>
+      <p>
+        Replace this page with your real site content.<br />
+        Babu floats in the bottom-right corner and engages every visitor.
+      </p>
+      <div class="hint">
+        ↘&nbsp; Click the avatar to start a conversation
+      </div>
+    </div>
+
+    <!-- Babu mounts here -->
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
