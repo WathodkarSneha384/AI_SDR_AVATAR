@@ -12,13 +12,31 @@
 
 import express from 'express';
 import cors from 'cors';
-import { createReadStream } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import { babuConfig } from './babu.config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Load .env.local / .env when present (local dev). Railway injects vars directly.
+function loadEnvFile(name) {
+  const path = join(__dirname, name);
+  if (!existsSync(path)) return;
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const val = trimmed.slice(eq + 1).trim();
+    if (!process.env[key]) process.env[key] = val;
+  }
+}
+loadEnvFile('.env.local');
+loadEnvFile('.env');
+
 const app = express();
 
 app.use(cors({ origin: process.env.ALLOWED_ORIGIN || '*' }));
