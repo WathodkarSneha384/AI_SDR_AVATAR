@@ -124,6 +124,89 @@ async function executeTool(name, input, cfg) {
   }
 }
 
+// ── PARSE CLAUDE JSON RESPONSE ───────────────────────────────
+// Claude sometimes returns prose + JSON instead of pure JSON.
+// Always return a clean reply string for the chat UI.
+function normalizeParsed(obj) {
+  let reply = typeof obj.reply === 'string' ? obj.reply.trim() : '';
+  if (reply.startsWith('{')) {
+    try {
+      const inner = JSON.parse(reply);
+      if (typeof inner.reply === 'string') return normalizeParsed(inner);
+    } catch { /* use reply as-is */ }
+  }
+  return {
+    reply,
+    qualUpdate: obj.qualUpdate && typeof obj.qualUpdate === 'object' ? obj.qualUpdate : {},
+    score: typeof obj.score === 'number' ? obj.score : 0,
+    route: obj.route ?? null,
+  };
+}
+
+function extractJsonObject(text) {
+  const fenced = text.match(/```json\s*([\s\S]*?)\s*```/i);
+  if (fenced) {
+    try { return JSON.parse(fenced[1].trim()); } catch { /* continue */ }
+  }
+
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        const chunk = text.slice(start, i + 1);
+        if (!chunk.includes('"reply"')) return null;
+        try { return JSON.parse(chunk); } catch { return null; }
+      }
+    }
+  }
+  return null;
+}
+
+function stripEmbeddedJson(text) {
+  let out = text.replace(/```json[\s\S]*?```/gi, '').trim();
+  const start = out.indexOf('{');
+  if (start === -1 || !out.includes('"reply"')) return out;
+
+  let depth = 0;
+  for (let i = start; i < out.length; i++) {
+    if (out[i] === '{') depth++;
+    else if (out[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        return (out.slice(0, start) + out.slice(i + 1)).trim();
+      }
+    }
+  }
+  return out;
+}
+
+function parseClaudeResponse(text) {
+  const fallback = { reply: '', qualUpdate: {}, score: 0, route: null };
+  if (!text?.trim()) return fallback;
+
+  const trimmed = text.trim();
+
+  // 1. Pure JSON (optionally wrapped in ```json fences)
+  try {
+    const bare = trimmed.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
+    const obj = JSON.parse(bare);
+    if (typeof obj.reply === 'string') return normalizeParsed(obj);
+  } catch { /* continue */ }
+
+  // 2. JSON embedded in prose
+  const embedded = extractJsonObject(trimmed);
+  if (embedded && typeof embedded.reply === 'string') return normalizeParsed(embedded);
+
+  // 3. No parseable JSON — strip any JSON-looking blocks, use remaining prose
+  const cleaned = stripEmbeddedJson(trimmed);
+  return { ...fallback, reply: cleaned || trimmed };
+}
+
 // ── POST /api/chat ────────────────────────────────────────────
 app.post('/api/chat', async (req, res) => {
   const { messages = [], page = 'homepage' } = req.body;
@@ -173,15 +256,9 @@ app.post('/api/chat', async (req, res) => {
       return res.status(500).json({ error: 'No text block in Claude response' });
     }
 
-    let parsed;
-    try {
-      const raw = textBlock.text
-        .replace(/^```json\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .trim();
-      parsed = JSON.parse(raw);
-    } catch {
-      parsed = { reply: textBlock.text, qualUpdate: {}, score: 0, route: null };
+    let parsed = parseClaudeResponse(textBlock.text);
+    if (!parsed.reply) {
+      parsed.reply = stripEmbeddedJson(textBlock.text.trim()) || 'Sorry, I had trouble forming a reply — could you try again?';
     }
 
     // ── CRM WRITE HOOK ──────────────────────────────────────
