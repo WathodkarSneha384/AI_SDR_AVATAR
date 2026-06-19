@@ -8,7 +8,7 @@
     "server": "node --env-file=.env.local server.js",
     "client": "vite",
     "build": "vite build",
-    "start": "node server.js"
+    "start": "node --env-file=.env.local server.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.20.0",

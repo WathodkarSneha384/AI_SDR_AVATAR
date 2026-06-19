@@ -268,6 +268,7 @@ function useVoice({ onInterim, onFinal, enabled }) {
 
           const ctx = new (window.AudioContext || window.webkitAudioContext)();
           audioCtxRef.current = ctx;
+          if (ctx.state === 'suspended') await ctx.resume();
 
           const src = ctx.createMediaStreamSource(mic);
           const analyser = ctx.createAnalyser();
@@ -275,14 +276,20 @@ function useVoice({ onInterim, onFinal, enabled }) {
           src.connect(analyser);
           analyserRef.current = analyser;
 
+          // Silent sink — keeps processor alive without echoing mic to speakers
           const processor = ctx.createScriptProcessor(4096, 1, 1);
+          const silent = ctx.createGain();
+          silent.gain.value = 0;
           src.connect(processor);
-          processor.connect(ctx.destination);
+          processor.connect(silent);
+          silent.connect(ctx.destination);
           processorRef.current = processor;
 
           const ws = new WebSocket(
-            `wss://api.deepgram.com/v1/listen?model=nova-3&language=en-US` +
-            `&smart_format=true&endpointing=300&interim_results=true`,
+            `wss://api.deepgram.com/v1/listen` +
+            `?model=nova-3&language=en-US&encoding=linear16` +
+            `&sample_rate=${ctx.sampleRate}&channels=1` +
+            `&smart_format=true&punctuate=true&endpointing=300&interim_results=true`,
             ['token', key]
           );
           wsRef.current = ws;
@@ -304,14 +311,21 @@ function useVoice({ onInterim, onFinal, enabled }) {
             if (!t) return;
             d.is_final ? onFinalRef.current(t) : onInterimRef.current(t);
           };
-          ws.onclose = ws.onerror = () => {
+          ws.onerror = (err) => {
+            console.warn('[STT] Deepgram WebSocket error', err);
+            setListening(false);
+            wsRef.current = null;
+          };
+          ws.onclose = () => {
             setListening(false);
             wsRef.current = null;
           };
           return; // Deepgram started successfully
         }
       }
-    } catch (_) { /* fall through to Web Speech */ }
+    } catch (err) {
+      console.warn('[STT] Deepgram unavailable, falling back to Web Speech:', err);
+    }
 
     // Web Speech API fallback
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -364,7 +378,7 @@ function useVoice({ onInterim, onFinal, enabled }) {
       };
 
       audio.onerror = () => { stopSpeaking(); onDone?.(); };
-      audio.play();
+      await audio.play();
 
       // Barge-in: watch mic energy while Babu speaks
       if (analyserRef.current) {
@@ -383,7 +397,7 @@ function useVoice({ onInterim, onFinal, enabled }) {
         bargeInRaf.current = requestAnimationFrame(checkBarge);
       }
     } catch (err) {
-      console.warn('[TTS]', err);
+      console.warn('[TTS]', err.message || err);
       stopSpeaking();
       onDone?.();
     }
@@ -392,13 +406,13 @@ function useVoice({ onInterim, onFinal, enabled }) {
   // Cleanup on unmount
   useEffect(() => () => { stopListening(); stopSpeaking(); }, []);
 
-  return { listening, speaking, startListening, stopListening, speak };
+  return { listening, speaking, startListening, stopListening, speak, stopSpeaking };
 }
 
 // ── MAIN WIDGET ───────────────────────────────────────────────
 export default function BabuWidget() {
   const [open,       setOpen]       = useState(false);
-  const [voiceOn,    setVoiceOn]    = useState(false);
+  const [voiceOn,    setVoiceOn]    = useState(true);
   const [messages,   setMessages]   = useState([]);
   const [input,      setInput]      = useState('');
   const [interim,    setInterim]    = useState('');
@@ -420,12 +434,14 @@ export default function BabuWidget() {
 
   // ── Voice callbacks (stable via refs inside hook) ───────
   const handleInterim = useCallback((t) => setInterim(t), []);
-  const handleFinal   = useCallback((t) => {
-    setInterim('');
-    sendMessage(t);   // defined below — hook stabilises via ref
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const sendMessageRef = useRef(null);
 
-  const { listening, speaking, startListening, stopListening, speak } = useVoice({
+  const handleFinal = useCallback((t) => {
+    setInterim('');
+    sendMessageRef.current?.(t);
+  }, []);
+
+  const { listening, speaking, startListening, stopListening, speak, stopSpeaking } = useVoice({
     onInterim: handleInterim,
     onFinal:   handleFinal,
     enabled:   voiceOn,
@@ -478,15 +494,7 @@ export default function BabuWidget() {
     }
   }, [loading, voiceOn, speak, startListening, stopListening, syncMessages]);
 
-  // Store sendMessage in a ref so the stable handleFinal callback can call it
-  const sendMessageRef = useRef(sendMessage);
   useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
-
-  // Patch handleFinal to use ref (avoids stale closure)
-  useEffect(() => {
-    // Override the handleFinal passed to hook — hook uses onFinalRef internally
-    // so updating the prop is sufficient (see useVoice onFinalRef useEffect).
-  }, []);
 
   // ── Greeting on open ───────────────────────────────────
   useEffect(() => {
@@ -495,7 +503,7 @@ export default function BabuWidget() {
     const greeting = { role: 'assistant', content: cfg.persona.greeting };
     syncMessages([greeting]);
     if (voiceOn) speak(cfg.persona.greeting, () => startListening());
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, voiceOn, speak, startListening, syncMessages]);
 
   // Auto-scroll to latest message
   useEffect(() => {
@@ -505,8 +513,14 @@ export default function BabuWidget() {
   const toggleVoice = () => {
     const next = !voiceOn;
     setVoiceOn(next);
-    if (!next) stopListening();
-    else if (open) startListening();
+    if (!next) {
+      stopListening();
+      stopSpeaking();
+    } else if (open) {
+      const lastBot = [...messagesRef.current].reverse().find(m => m.role === 'assistant');
+      const toSpeak = lastBot?.content || cfg.persona.greeting;
+      speak(toSpeak, () => startListening());
+    }
   };
 
   const toggleMic = () => (listening ? stopListening() : startListening());
